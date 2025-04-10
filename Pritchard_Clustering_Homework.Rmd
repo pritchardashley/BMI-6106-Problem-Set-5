@@ -1,0 +1,567 @@
+---
+title: "Clustering Homework - Due April 9th"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The Breast Cancer dataset, also known as the Wisconsin Diagnostic Breast Cancer (WDBC) dataset, contains measurements from digitized images of fine needle aspirate (FNA) biopsies of breast masses. Each sample is described by 30 numeric features representing the characteristics of the cell nuclei, such as radius, texture, perimeter, area, and smoothness. The dataset includes 569 samples, each labeled as either malignant (M) or benign (B).
+
+Your job today is use the learned clustering methods in class to best describe this dataset. The Ultimate goal is to understand the classificatory power of this dataset, which variables are the most important at separating the two classes and to statistically compare multiple clustering methods.
+
+```{r}
+library(Rtsne)
+library(psych)
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+library(tidyverse)
+library(caret)
+library(dplyr)
+library(cluster)
+library(clusterCrit)
+library(fpc)
+```
+
+## 1. Load Data 
+
+```{r}
+#Import Files
+
+setwd("/Users/ashleypritchard/Desktop/BMI 6106")
+list.files()
+
+cancer = read.csv("Breast_Cancer.csv")
+head(cancer)
+```
+
+## 2. PCA (10)
+
+- Scree plot
+
+```{r}
+#scree plot
+
+#make sure data is normalized 
+num_cancer = cancer[, sapply(cancer, is.numeric)]
+norm_cancer = scale(num_cancer)
+
+#Run PCA
+pca_cancer = prcomp(norm_cancer, scale. = TRUE)
+
+#Make scree plot
+fviz_eig(pca_cancer, addlabels = TRUE, ylim = c(0, 100)) +
+  ggtitle("Scree Plot - Variance Explained by Each PC")
+
+```
+
+
+- Biplot
+```{r}
+#Biplot
+
+fviz_pca_biplot(pca_cancer,
+                label = "var",   # show variable vectors
+                addEllipses = TRUE,
+                col.var = "purple") +
+  ggtitle("PCA Biplot")
+```
+- Variance explained - which variables contribute the most on PC1,2?
+
+```{r}
+loading_cancer = as.data.frame(pca_cancer$rotation)
+print(loading_cancer)
+
+
+#Contributions (percent)
+cont_cancer = get_pca_var(pca_cancer)$contrib
+print(round(cont_cancer[order(-cont_cancer[, 1]), ], 2))
+
+top_pc1 = cont_cancer[order(-cont_cancer[, 1]), ][1:10, ]
+top_pc2 = cont_cancer[order(-cont_cancer[, 2]), ][1:10, ]
+
+#Plot
+fviz_contrib(pca_cancer, choice = "var", axes = 1, top = 2)
+fviz_contrib(pca_cancer, choice = "var", axes = 2, top = 2)
+
+#The top two variables contributing to PC1 and PC2 are the concave points mean and concavity mean for PC1 and for PC2 it is fractal dimensions mean and fractal dimesions se.
+```
+- Confusion matrix
+
+```{r}
+#Confusion Matrix
+cancer_kmeans = kmeans(pca_cancer$x[, 1:5], centers = 2,nstart = 25)
+cancer_numb = as.factor(cancer$diagnosis)
+cancer_numb = as.factor(recode(cancer_numb, "B" = 1, "M" = 2))
+pca_kmeans = as.factor(cancer_kmeans$cluster)
+
+confusionMatrix(data = pca_kmeans, reference = cancer_numb)
+
+#The accuracy is 91% with a sensitivity of 96% and a slightly lower specificity at 82%.
+```
+
+## 3. t-SNE (10)
+
+- Try different perplexities
+
+```{r}
+#Different perplexities
+cancer_30 = Rtsne(norm_cancer, perplexity = 30, verbose = TRUE)
+cancer_5 = Rtsne(norm_cancer, perplexity = 5, verbose = TRUE)
+cancer_50 = Rtsne(norm_cancer, perplexity = 50, verbose = TRUE)
+
+#The error decreases with each iteration as expected. The error is greatest with a perplexity of 5 and lowest with a perplexity of 50.
+```
+- Visualize colored by true labels
+
+```{r}
+
+#Make a data frames for each perplexity
+df_5 = data.frame(
+  X = cancer_5$Y[,1],
+  Y = cancer_5$Y[,2],
+  Label = cancer$diagnosis,
+  Perplexity = "Perplexity = 5"
+)
+
+df_30 = data.frame(
+  X = cancer_30$Y[,1],
+  Y = cancer_30$Y[,2],
+  Label = cancer$diagnosis,
+  Perplexity = "Perplexity = 30"
+)
+
+df_50 = data.frame(
+  X = cancer_50$Y[,1],
+  Y = cancer_50$Y[,2],
+  Label = cancer$diagnosis,
+  Perplexity = "Perplexity = 50"
+)
+
+#Combine
+tsne_data = bind_rows(df_5, df_30, df_50)
+
+ggplot(tsne_data, aes(x = X, y = Y, color = Label)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  facet_wrap(~ Perplexity, nrow = 1) +
+  labs(
+    title = "t-SNE Visualized by True Lables",
+    x = "t-SNE 1", y = "t-SNE 2"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+- confusion matrix
+
+```{r}
+
+set.seed(420)
+tsne_kmeans5 = kmeans(cancer_5$Y, centers = 2)
+tsne_kmeans30 = kmeans(cancer_30$Y, centers = 2)
+tsne_kmeans50 = kmeans(cancer_50$Y, centers = 2)
+
+table(Predicted = tsne_kmeans5$cluster, Actual = cancer$diagnosis)
+table(Predicted = tsne_kmeans30$cluster, Actual = cancer$diagnosis)
+table(Predicted = tsne_kmeans50$cluster, Actual = cancer$diagnosis)
+
+actual_labels = factor(cancer$diagnosis, levels = c("B", "M"))
+
+#True labels: "B" = 1, "M" = 2
+actual_numeric = ifelse(cancer$diagnosis == "B", 1, 2)
+actual_factor = factor(actual_numeric, levels = c(1, 2))
+
+#confusion matrix
+evaluate_confusion = function(pred_clusters, actual_factor) {
+  pred1 = factor(pred_clusters, levels = c(1, 2))
+  pred2 = factor(ifelse(pred_clusters == 1, 2, 1), levels = c(1, 2))
+  
+  cm1 = confusionMatrix(pred1, actual_factor)
+  cm2 = confusionMatrix(pred2, actual_factor)
+  
+  if (cm1$overall["Accuracy"] > cm2$overall["Accuracy"]) {
+    return(cm1)
+  } else {
+    return(cm2)
+  }
+}
+
+#evaluations
+cat("Confusion Matrix for t-SNE Perplexity = 5:\n")
+print(evaluate_confusion(tsne_kmeans5$cluster, actual_factor))
+
+cat("\nConfusion Matrix for t-SNE Perplexity = 30:\n")
+print(evaluate_confusion(tsne_kmeans30$cluster, actual_factor))
+
+cat("\nConfusion Matrix for t-SNE Perplexity = 50:\n")
+print(evaluate_confusion(tsne_kmeans50$cluster, actual_factor))
+
+#The accuracy for all tests were quite high around 91% with a sensitivity of a similar percentage.
+
+#Perplexity = 5 - Accuracy of 90.16% with a sensitivity of 89.36%
+#Perplexity = 30 - Accuracy of 93.50% and a sensitivity of 93.00%
+#Perplexity = 50 - Accuracy of 92.27% and a sensitivity of 93.56%
+```
+
+## 4. K-means Clustering (10)
+
+- Elbow method
+
+```{r}
+set.seed(69)
+
+wcss = vector()
+
+for (k in 1:10) {
+  kmeans_result = kmeans(norm_cancer, centers = k, nstart = 25)
+  wcss[k] = kmeans_result$tot.withinss
+}
+
+#Plot
+plot(1:10, wcss, type = "b", pch = 19,
+     xlab = "Number of Clusters",
+     ylab = "Total Sum of Squares",
+     main = "Elbow Method")
+
+```
+- Silhouette score
+
+```{r}
+dist_mat = dist(norm_cancer)
+
+set.seed(123)
+kmeans_result = kmeans(norm_cancer, centers = 2, nstart = 25)
+
+#silhouette score
+cancer_sil = silhouette(kmeans_result$cluster, dist_mat)
+
+#Plot silhouette
+sil_plot = fviz_silhouette(cancer_sil)
+sil_plot
+
+#Mean silhouette width
+mean(cancer_sil[, 3])
+
+
+```
+- Compare to true labels - confusion matrix
+
+```{r}
+cancer_numb <- ifelse(cancer$diagnosis == "B", 1, 2)
+cancer_numb <- factor(cancer_numb, levels = c(1, 2))
+
+# Use the cluster results from your t-SNE + KMeans (e.g., perplexity = 50)
+kmeans_result <- tsne_kmeans50  # or tsne_kmeans5, tsne_kmeans30
+cancer_cluster <- factor(kmeans_result$cluster, levels = c(1, 2))
+
+
+#Kmeans into factors
+cancer_cluster = as.factor(kmeans_result$cluster)
+
+#confusion matrix
+confusionMatrix(data = cancer_cluster, reference = cancer_numb)
+
+#An accuracy of 92.27% and a sensitivity of 93.56%
+```
+
+## 5. Hierarchical Clustering (10)
+
+- Try different linkage methods
+
+```{r}
+#Compute the distance matrix
+dists_cancer = dist(norm_cancer)  # Compute the pairwise distances
+
+#Apply hierarchical clustering with different linkage methods
+
+#linkages
+hclust_complete = hclust(dists, method = "complete")
+hclust_average = hclust(dists, method = "average")
+hclust_single = hclust(dists, method = "single")
+hclust_ward = hclust(dists, method = "ward.D2")
+
+hclust_complete
+hclust_average
+hclust_single
+hclust_ward
+```
+- Plot dendrograms
+```{r}
+#Plot dendrograms for each method
+par(mfrow = c(2, 2))  # Arrange plots in a 2x2 grid
+
+#linkage dendrograms
+plot(hclust_complete, main = "Complete Linkage")
+plot(hclust_average, main = "Average Linkage")
+plot(hclust_single, main = "Single Linkage")
+plot(hclust_ward, main = "Ward's Linkage")
+
+par(mfrow = c(1, 1))
+
+```
+- Evaluate - confusion matrix
+```{r}
+dists = dist(norm_cancer)
+
+#Linkage method
+hclust_complete = hclust(dists, method = "complete")
+hclust_average = hclust(dists, method = "average")
+hclust_single = hclust(dists, method = "single")
+hclust_ward = hclust(dists, method = "ward")
+
+#Cut the dendrogram to get clusters
+clusters_complete = cutree(hclust_complete, k = 2)
+clusters_average = cutree(hclust_average, k = 2)
+clusters_single = cutree(hclust_single, k = 2)
+clusters_ward = cutree(hclust_ward, k = 2)
+
+
+relabel_clusters = function(clusters, true_labels) {
+  cluster1_label = sum(true_labels[clusters == 1] == "B") > sum(true_labels[clusters == 1] == "M")
+  cluster2_label = sum(true_labels[clusters == 2] == "B") > sum(true_labels[clusters == 2] == "M")
+  
+  #Relabel clusters based on majority class
+  factor(clusters, levels = c(1, 2), labels = c(ifelse(cluster1_label, "B", "M"), ifelse(cluster2_label, "B", "M")))
+}
+
+#Relabel clusters
+clusters_complete = relabel_clusters(clusters_complete, cancer$diagnosis)
+clusters_average = relabel_clusters(clusters_average, cancer$diagnosis)
+clusters_single = relabel_clusters(clusters_single, cancer$diagnosis)
+clusters_ward = relabel_clusters(clusters_ward, cancer$diagnosis)
+
+#Actual labels
+actual_labels = factor(cancer$diagnosis, levels = c("B", "M"))
+
+#Confusion matrices
+confusion_complete = confusionMatrix(clusters_complete, actual_labels)
+confusion_average = confusionMatrix(clusters_average, actual_labels)
+confusion_single = confusionMatrix(clusters_single, actual_labels)
+confusion_ward = confusionMatrix(clusters_ward, actual_labels)
+
+print(confusion_complete)
+print(confusion_average)
+print(confusion_single)
+print(confusion_ward)
+
+#All tests aside from the ward have an accuracy of about 63%, which is not great while the ward has an accuracy of 89.9%. The sensitivity across all tests are quite high with 3/4 being 1 and one being .91 indicating that the tests are highly sensitive though they are not accurate.
+
+#complete - The accuracy is 63.09% with a sensitivity of 1.0
+#average - The acuracy is 63.27% with a sensitivy of 1.0
+#Single - The accuracy is 63.07% with a sensitivity of 1.0
+#Ward - The accuracy is 89.98% with a sensitivity of 91.88%
+
+```
+## 6. Combination of Methods (10)
+
+- Does combining methods work better?
+
+```{r}
+#Combiniing methods
+
+  ###T-nse with PCA
+pca_res = prcomp(norm_cancer, scale. = TRUE)
+pca_top5 = pca_res$x[, 1:5]
+
+combined_features = cbind(cancer_50$Y, pca_top5)
+
+##cluster
+set.seed(8008135)
+combined_kmeans = kmeans(combined_features, centers = 2)
+
+#Map clusters to labels
+predicted_combined = factor(combined_kmeans$cluster)
+cluster_table_combined = table(predicted_combined, cancer$diagnosis)
+print(cluster_table_combined)
+
+
+
+###t-SNE with heirarcical clustering
+
+#t-SNE with perplexity = 50
+tsne_data = cancer_50$Y
+
+#hierarchical clustering
+tsne_dist = dist(tsne_data)
+hclust_tsne = hclust(tsne_dist, method = "ward.D2")
+
+#Cut the dendrogram
+clusters_tsne = cutree(hclust_tsne, k = 2)
+```
+- Evaluate - confusion matrix
+
+```{r}
+#confusion matrix PCA + t-SNE
+mapped_combined = ifelse(predicted_combined == names(which.max(table(predicted_combined[cancer$diagnosis == "B"]))), "B", "M")
+confusion_combined = confusionMatrix(factor(mapped_combined, levels = c("B", "M")),
+                                      factor(cancer$diagnosis, levels = c("B", "M")))
+print(confusion_combined)
+
+#There was little to no change when combining T-nse and PCA, the accuracy stayed about the same while there was a slight improvement in the sensitivity.
+
+#confusion matrix Hierarchical clustering + t-SNE
+clusters_tsne_factor = factor(clusters_tsne)
+cluster_table_tsne = table(clusters_tsne_factor, cancer$diagnosis)
+print(cluster_table_tsne)
+
+mapped_tsne = ifelse(clusters_tsne_factor == names(which.max(table(clusters_tsne_factor[cancer$diagnosis == "B"]))), "B", "M")
+confusion_tsne = confusionMatrix(factor(mapped_tsne, levels = c("B", "M")),
+                                  factor(cancer$diagnosis, levels = c("B", "M")))
+print(confusion_tsne)
+
+#There was a drastic improvement when combing t-SNE and heirarchical clustering! The accuracy jumped from 60% for hierarchical to 92% when combined with t-SNE.
+
+```
+
+## 7. Evaluation (20)
+
+- Confusion matrices comparison and analysis (why are these different?)
+
+```{r}
+
+#Genera results from each confusion matric
+
+#PCA
+#The accuracy is 91.04% with a sensitivity of 96.08%.
+
+#t-SNE
+#Perplexity = 5 - Accuracy of 90.16% with a sensitivity of 89.36%
+#Perplexity = 30 - Accuracy of 93.50% and a sensitivity of 93.00%
+#Perplexity = 50 - Accuracy of 92.27% and a sensitivity of 93.56%
+
+#K-Means Clustering
+#The accuracy is 92.27% and a sensitivity of 93.56%
+
+#Hierarchical Clustering
+##complete - The accuracy is 63.09% with a sensitivity of 1.0
+#average - The acuracy is 63.27% with a sensitivy of 1.0
+#Single - The accuracy is 63.07% with a sensitivity of 1.0
+#Ward - The accuracy is 89.98% with a sensitivity of 91.88%
+
+#The tests are different as PCA and t-SNE dont cluster themselves but rather are generally used before clustering.K-means clustering is generally used after using PCA or t-SNE. Hierarchical clustering clusters everything in a tree like structure where one thing stems from another. In theres of accuracy, the best is t-SNE at a perplexity of 30.
+```
+- Dunn index (why are these different?)
+```{r}
+#Dunn Index
+
+#PCA Dunn Index
+# Get the PCA-transformed data (the first few principal components)
+pca_cancer = prcomp(norm_cancer, scale. = TRUE)
+pca_data = pca_cancer$x
+
+kmeans_pca = kmeans(pca_data[, 1:2], centers = 2)
+clusters_pca = kmeans_pca$cluster
+
+
+#Dunn Index for the clustering
+dunn_pca = cluster.stats(d = dist(pca_data[, 1:2]), clustering = clusters_pca)$dunn
+print(paste("Dunn Index for PCA clustering: ", dunn_pca))
+
+    #Dunn Index for PCA clustering:  0.00933765008576165
+
+
+
+#t-SNE Dunn Index
+dunn_tsne = cluster.stats(d = dist(tsne_data), clustering = clusters_tsne)$dunn
+print(paste("Dunn Index for t-SNE: ", dunn_tsne))
+
+    #Dunn Index for t-SNE:  0.054431377913391
+
+
+
+#k-means Dunn Index
+dunn_kmeans = cluster.stats(d = dist(norm_cancer), clustering = clusters_kmeans)$dunn
+print(paste("Dunn Index for K-Means: ", dunn_kmeans))
+
+    #Dunn Index for K-Means:  0.0760390178191783
+
+
+
+#Heirarchical Dunn Index
+clusters_complete_numeric = as.integer(clusters_complete)
+clusters_average_numeric = as.integer(clusters_average)
+clusters_single_numeric = as.integer(clusters_single)
+clusters_ward_numeric = as.integer(clusters_ward)
+
+  #Dunn Index for linkages method
+dunn_complete = cluster.stats(d = dist(norm_cancer), clustering = clusters_complete_numeric)$dunn
+dunn_average = cluster.stats(d = dist(norm_cancer), clustering = clusters_average_numeric)$dunn
+dunn_single = cluster.stats(d = dist(norm_cancer), clustering = clusters_single_numeric)$dunn
+dunn_ward = cluster.stats(d = dist(norm_cancer), clustering = clusters_ward_numeric)$dunn
+
+print(paste("Dunn Index for Complete Linkage: ", dunn_complete))
+print(paste("Dunn Index for Average Linkage: ", dunn_average))
+print(paste("Dunn Index for Single Linkage: ", dunn_single))
+print(paste("Dunn Index for Ward Linkage: ", dunn_ward))
+
+    #Dunn Index for Complete Linkage:  0.518404950643067
+    #Dunn Index for Average Linkage:  0.340462241752262
+    #Dunn Index for Single Linkage:  0.518404950643067
+    #Dunn Index for Ward Linkage:  0.065981611835134
+
+#These are different because they are all doing different but similar things. As an example PCA is very low and that may be due to it may not be picking up non linear aspects of the data, while t-SNE is higher because it is able to pick up the non linear aspects. K-means returns a higher dunn-index because K-means is trying to cluster separately thus creating more separation whuch is what a dunn index measures. As for the heirarchical, the differening levels indicate that some levels are more separated than others.
+```
+- Davies-Bouldin index (why are these different?)
+```{r}
+#Davies-Bouldin index (why are these different?)
+
+#PCA
+dbi_pca = cluster.stats(d = dist(pca_data[, 1:2]), clustering = clusters_pca)$dbi
+print(paste("Davies-Bouldin Index for PCA clustering: ", dbi_pca))
+
+#t-SNE
+tsne_result = Rtsne(norm_cancer, dims = 2)
+
+clusters_tsne = kmeans(tsne_result$Y, centers = 3)$cluster
+dbi_tsne = cluster.stats(d = dist(tsne_result$Y), clustering = clusters_tsne)$dbi
+print(paste("Davies-Bouldin Index for t-SNE clustering: ", dbi_tsne))
+
+#K-means
+dbi_kmeans = cluster.stats(d = dist(norm_cancer), clustering = clusters_kmeans)$dbi
+print(paste("Davies-Bouldin Index for K-Means: ", dbi_kmeans))
+
+#Heirarchical
+hclust_result = hclust(dists, method = "complete")
+clusters_hclust = cutree(hclust_result, k = 3)
+dbi_hclust = cluster.stats(d = dist(norm_cancer), clustering = clusters_hclust)$dbi
+print(paste("Davies-Bouldin Index for Hierarchical Clustering: ", dbi_hclust))
+
+#Similar to the Dunn Index, the results are different because of dimensionality or a tools goal to minimize variance within a cluster. The values returned indicate the separation of a cluster and the tightness of the cluster. The PCA aims to reduce dimensionality but is not measured in a way where it shows the clusters being easily separated so it has a higher DBI value while the K-means produces tight clusters resulting in a lower DBI value. 
+```
+
+## 8. Conclusion (20)
+- Overall conclusion of your analysis one paragraph 200 words +/- 10 words
+```{r}
+#This analysis utilized PCA, t-SNE at different perplexities, K-means clustering and heirarchical clustering to gain an understanding of perdeicting whether a tumor is bbening or malignant. Overall, K-Means clustering performed the best in terms of accuracy and sensitivity. Along with a higher accuracy, it also produced a lower DBI value indicating tighter clustering and less overlap between clusters. In general, there was improvement when combining methods allowing me to conclude that if I were to combine PCA with k-means clustering, the accuracy would continue to increase. There was a stronger correlation with "true class labels" indicating that it works well with the structure of the dataset. The other tools alone did not perform to the same degree as K-means clustering. Hierarchical clustering had lower accuracy scores but improved when paired with PCA which reduces dimensionality of the data. Hierarchical clustering returned a higher DBI value meaning that its clusters were not as tight and showed overlap between diagnosis.When looking at t-SNE, it performed best with a perplexity of 30, but it did return a higher DBI value indicating more overlap, but also a higher Dunn Index indicating more separation in the data than PCA. Overall it can be concluded that K-means clustering provided the most reliable performamces thus fit the data set best. 
+```
+
+## 9. Additional Questions (10 - 5 each)
+
+- How many principal components are required to explain 80% of the variance?
+```{R}
+#In this dataset, 5 Principal Components are required to explain 80% of the variance
+```
+
+- True or False: t-SNE preserves global distances between samples.
+```{r}
+#FALSE
+```
+
+- Why do we scale the variables in this dataset?
+```{r}
+#We scale the variables in this dataset to ensure that each are weighted evenly, so that each variable contributes equally to the final result (diagnosis)
+```
+- Which metric favors high separation and low intra-cluster spread?.
+
+  A.  Dunn Index
+  B.  DB index
+  C.  Silhouette
+  D.  Euclidean Distance
+  
+```{r}
+#A. Dunn Index
+```
+
+```
